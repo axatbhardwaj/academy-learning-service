@@ -41,6 +41,8 @@ states:
 - SynchronizeLateMessagesRound
 - TxPreparationRound
 - ValidateTransactionRound
+- coincapRound
+- FinishedCoincapRound
 transition_func:
     (DataPullRound, DONE): DecisionMakingRound
     (DataPullRound, NO_MAJORITY): DataPullRound
@@ -109,3 +111,6 @@ transition_func:
     (ValidateTransactionRound, NONE): SelectKeeperTransactionSubmissionBRound
     (ValidateTransactionRound, NO_MAJORITY): ValidateTransactionRound
     (ValidateTransactionRound, VALIDATE_TIMEOUT): CheckTransactionHistoryRound
+    (coincapRound, DONE): FinishedCoincapRound
+    (coincapRound, NO_MAJORITY): coincapRound
+    (coincapRound, ROUND_TIMEOUT): coincapRound
