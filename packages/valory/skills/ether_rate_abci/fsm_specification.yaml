@@ -1,0 +1,20 @@
+alphabet_in:
+- DONE
+- ERROR
+- NO_MAJORITY
+- ROUND_TIMEOUT
+- TRANSACT
+default_start_state: coincapRound
+final_states:
+- FinishedCoincapRound
+label: CoincapAbciApp
+start_states:
+- coincapRound
+states:
+- coincapRound
+- FinishedCoincapRound
+transition_func:
+    (coincapRound, DONE): FinishedCoincapRound
+    (coincapRound, NO_MAJORITY): coincapRound
+    (coincapRound, ROUND_TIMEOUT): coincapRound
+  

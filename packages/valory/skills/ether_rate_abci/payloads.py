@@ -25,41 +25,9 @@ from typing import Optional
 from packages.valory.skills.abstract_round_abci.base import BaseTxPayload
 
 
-@dataclass(frozen=True)
-class DataPullPayload(BaseTxPayload):
-    """Represent a transaction payload for the DataPullRound."""
-
-    price: Optional[float]
-    price_ipfs_hash: Optional[str]
-    native_balance: Optional[float]
-    erc20_balance: Optional[float]
-
 
 @dataclass(frozen=True)
-class DecisionMakingPayload(BaseTxPayload):
-    """Represent a transaction payload for the DecisionMakingRound."""
+class coincapPayload(BaseTxPayload):
+    """Represent a transaction payload for the coincapRound."""
 
-    event: str
-
-
-@dataclass(frozen=True)
-class TxPreparationPayload(BaseTxPayload):
-    """Represent a transaction payload for the TxPreparationRound."""
-
-    tx_submitter: Optional[str] = None
-    tx_hash: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class NativeTransferPayload(BaseTxPayload):
-    """Represent a transaction payload for the TxPreparationRound."""
-
-    tx_submitter: Optional[str]
-    tx_hash: Optional[str]
-
-
-@dataclass(frozen=True)
-class TotalSupplyCheckPayload(BaseTxPayload):
-    """Represent a transaction payload for the TxPreparationRound."""
-
-    total_supply: Optional[float]
+    rateUSD: Optional[str]

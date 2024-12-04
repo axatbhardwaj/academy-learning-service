@@ -37,6 +37,8 @@ from packages.valory.skills.abstract_round_abci.base import (
 from packages.valory.skills.learning_abci.payloads import (
     DataPullPayload,
     DecisionMakingPayload,
+    NativeTransferPayload,
+    TotalSupplyCheckPayload,
     TxPreparationPayload,
 )
 
@@ -103,6 +105,34 @@ class SynchronizedData(BaseSynchronizedData):
         """Get the round that submitted a tx to transaction_settlement_abci."""
         return str(self.db.get_strict("tx_submitter"))
 
+    @property
+    def participant_to_native_transfer_round(self) -> DeserializedCollection:
+        """Get the participants to the native transfer round."""
+        return self._get_deserialized("participant_to_native_transfer_round")
+
+    @property
+    def total_supply(self) -> Optional[float]:
+        """Get the total supply."""
+        return self.db.get("total_supply", None)
+
+    @property
+    def participant_to_total_supply_check_round(self) -> DeserializedCollection:
+        """Get the participants to the total supply check round."""
+        return self._get_deserialized("participant_to_total_supply_check_round")
+
+
+class TotalSupplyCheckRound(CollectSameUntilThresholdRound):
+    """TotalSupplyCheckRound"""
+
+    payload_class = TotalSupplyCheckPayload
+    synchronized_data_class = SynchronizedData
+    done_event = Event.DONE
+    no_majority_event = Event.NO_MAJORITY
+    collection_key = get_name(SynchronizedData.participant_to_total_supply_check_round)
+    selection_key = (get_name(SynchronizedData.total_supply),)
+
+    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
+
 
 class DataPullRound(CollectSameUntilThresholdRound):
     """DataPullRound"""
@@ -153,6 +183,38 @@ class DecisionMakingRound(CollectSameUntilThresholdRound):
     # Event.DONE, Event.ERROR, Event.TRANSACT, Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
 
 
+class NativeTransferRound(CollectSameUntilThresholdRound):
+    """NativeTransferRound"""
+
+    payload_class = NativeTransferPayload
+    synchronized_data_class = SynchronizedData
+    done_event = Event.DONE
+    no_majority_event = Event.NO_MAJORITY
+    collection_key = get_name(SynchronizedData.participant_to_native_transfer_round)
+    selection_key = (
+        get_name(SynchronizedData.tx_submitter),
+        get_name(SynchronizedData.most_voted_tx_hash),
+    )
+
+    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
+
+
+class TotalSupplyCheckRound(CollectSameUntilThresholdRound):
+    """TotalSupplyCheckRound"""
+
+    payload_class = TotalSupplyCheckPayload
+    synchronized_data_class = SynchronizedData
+    done_event = Event.DONE
+    no_majority_event = Event.NO_MAJORITY
+    collection_key = get_name(SynchronizedData.participant_to_total_supply_check_round)
+    selection_key = (
+        get_name(SynchronizedData.tx_submitter),
+        get_name(SynchronizedData.most_voted_tx_hash),
+    )
+
+    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
+
+
 class TxPreparationRound(CollectSameUntilThresholdRound):
     """TxPreparationRound"""
 
@@ -188,6 +250,11 @@ class LearningAbciApp(AbciApp[Event]):
         DataPullRound: {
             Event.NO_MAJORITY: DataPullRound,
             Event.ROUND_TIMEOUT: DataPullRound,
+            Event.DONE: TotalSupplyCheckRound,
+        },
+        TotalSupplyCheckRound: {
+            Event.NO_MAJORITY: TotalSupplyCheckRound,
+            Event.ROUND_TIMEOUT: TotalSupplyCheckRound,
             Event.DONE: DecisionMakingRound,
         },
         DecisionMakingRound: {
@@ -200,6 +267,11 @@ class LearningAbciApp(AbciApp[Event]):
         TxPreparationRound: {
             Event.NO_MAJORITY: TxPreparationRound,
             Event.ROUND_TIMEOUT: TxPreparationRound,
+            Event.DONE: NativeTransferRound,
+        },
+        NativeTransferRound: {
+            Event.NO_MAJORITY: NativeTransferRound,
+            Event.ROUND_TIMEOUT: NativeTransferRound,
             Event.DONE: FinishedTxPreparationRound,
         },
         FinishedDecisionMakingRound: {},
