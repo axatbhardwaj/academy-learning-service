@@ -59,6 +59,11 @@ class Params(BaseParams):
         # multisend address is used in other skills, so we cannot pop it using _ensure
         self.multisend_address = kwargs.get("multisend_address", "")
 
+        # Add the missing betchain_contract_address parameter
+        self.betchain_contract_address = self._ensure(
+            "betchain_contract_address", kwargs, str
+        )
+
         super().__init__(*args, **kwargs)
 
 

@@ -43,7 +43,6 @@ from packages.valory.skills.termination_abci.behaviours import (
 from packages.valory.skills.transaction_settlement_abci.behaviours import (
     TransactionSettlementRoundBehaviour,
 )
-from packages.valory.skills.ether_rate_abci.behaviours import CoincapRoundBehaviour
 
 
 class LearningChainedConsensusBehaviour(AbstractRoundBehaviour):
@@ -57,6 +56,5 @@ class LearningChainedConsensusBehaviour(AbstractRoundBehaviour):
         *TransactionSettlementRoundBehaviour.behaviours,
         *TerminationAbciBehaviours.behaviours,
         *LearningRoundBehaviour.behaviours,
-        *CoincapRoundBehaviour.behaviours,
     }
     background_behaviours_cls = {BackgroundBehaviour}

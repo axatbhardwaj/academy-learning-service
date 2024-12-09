@@ -20,6 +20,7 @@ contracts:
 - valory/multisend:0.1.0:bafybeig5byt5urg2d2bsecufxe5ql7f4mezg3mekfleeh32nmuusx66p4y
 - valory/service_registry:0.1.0:bafybeihafe524ilngwzavkhwz4er56p7nyar26lfm7lrksfiqvvzo3kdcq
 - valory/erc20:0.1.0:bafybeibyhuxozkkvsymqz45vxixr3w3bs4vsvxg2nsx5jlyi3f3hhn7ezi
+- valory/betchain:0.1.0:bafybeih3uzvzt2mza6psbdxkkavblrf6klzbeymjaifk4z5n5jtv63y7km
 protocols:
 - open_aea/signing:1.0.0:bafybeihv62fim3wl2bayavfcg3u5e5cxu3b7brtu4cn5xoxd6lqwachasi
 - valory/abci:0.1.0:bafybeiaqmp7kocbfdboksayeqhkbrynvlfzsx4uy4x6nohywnmaig4an7u
@@ -32,13 +33,12 @@ protocols:
 skills:
 - valory/abstract_abci:0.1.0:bafybeidz54kvxhbdmpruzguuzzq7bjg4pekjb5amqobkxoy4oqknnobopu
 - valory/abstract_round_abci:0.1.0:bafybeiajjzuh6vf23crp55humonknirvv2f4s3dmdlfzch6tc5ow52pcgm
-- valory/learning_abci:0.1.0:bafybeic7smyfxlanubsn7oj4u6z7mdvpkwigx5w72gypjis6tzf4zzwkhi
-- valory/learning_chained_abci:0.1.0:bafybeidp7ruyjhopbwzn5iv3mjtvh6cmgffy6eturwox7bkkw4b2mjofom
+- valory/learning_abci:0.1.0:bafybeibr7bwk537oftsnza3j4vh63ise3imt5lbtdszicgk7ubqgi2pqbe
+- valory/learning_chained_abci:0.1.0:bafybeibqkq7fxncsn2rjbl2ezx5c7uy4qsix5uw7q6gzkz2yezxzhy3dx4
 - valory/registration_abci:0.1.0:bafybeiffipsowrqrkhjoexem7ern5ob4fabgif7wa6gtlszcoaop2e3oey
 - valory/reset_pause_abci:0.1.0:bafybeif4lgvbzsmzljesxbphycdv52ka7qnihyjrjpfaseclxadcmm6yiq
 - valory/termination_abci:0.1.0:bafybeiekkpo5qef5zaeagm3si6v45qxcojvtjqe4a5ceccvk4q7k3xi3bi
 - valory/transaction_settlement_abci:0.1.0:bafybeielv6eivt2z6nforq43xewl2vmpfwpdu2s2vfogobziljnwsclmlm
-- valory/ether_rate_abci:0.1.0:bafybeifhikcqnvpfqki2v7b6sigmfmflgcsd3tf2azivdl4rma4qx5qh64
 default_ledger: ethereum
 required_ledgers:
 - ethereum

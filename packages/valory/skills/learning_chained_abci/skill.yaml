@@ -7,10 +7,10 @@ license: Apache-2.0
 aea_version: '>=1.0.0, <2.0.0'
 fingerprint:
   __init__.py: bafybeihu5y5llhaefw32jodf2nc2x5tig7cfo2fallbodv6vodczunpbve
-  behaviours.py: bafybeifhutwdxdct7usaycoaodrudkl5zrtsgnaawwfhbxvp3fgjsp7o3a
-  composition.py: bafybeidnyllu5qxpk2qww3a4cn7f65h3ddw4khsdcduotxgkojrje476aa
+  behaviours.py: bafybeiagipms5gfebqysx5sl4dhydppceqv4aga64ibqgygqczbh4imyxu
+  composition.py: bafybeib64i3h7vmimsjflc37j4s5feipiar7hib5ixdwbadphjezq5z4cu
   dialogues.py: bafybeiakqfqcpg7yrxt4bsyernhy5p77tci4qhmgqqjqi3ttx7zk6sklca
-  fsm_specification.yaml: bafybeifhiu735qamkt4kysa3ysd6isbzbwi4krs6o2djsxyuqo5pd3nd6q
+  fsm_specification.yaml: bafybeibhguliurgppqgues6zhy3e3pioacgapilid7j26u4pmfsump5ape
   handlers.py: bafybeicru4lanvektcppxpecul4zwjfuaxseopxtsxrfzmbfaz5qk4m67q
   models.py: bafybeico4qysu652lznxwxfamsu43d7llstplca5eqcwnmwg66fxmzt4qe
 fingerprint_ignore_patterns: []
@@ -22,9 +22,8 @@ skills:
 - valory/registration_abci:0.1.0:bafybeiffipsowrqrkhjoexem7ern5ob4fabgif7wa6gtlszcoaop2e3oey
 - valory/reset_pause_abci:0.1.0:bafybeif4lgvbzsmzljesxbphycdv52ka7qnihyjrjpfaseclxadcmm6yiq
 - valory/termination_abci:0.1.0:bafybeiekkpo5qef5zaeagm3si6v45qxcojvtjqe4a5ceccvk4q7k3xi3bi
-- valory/learning_abci:0.1.0:bafybeic7smyfxlanubsn7oj4u6z7mdvpkwigx5w72gypjis6tzf4zzwkhi
+- valory/learning_abci:0.1.0:bafybeibr7bwk537oftsnza3j4vh63ise3imt5lbtdszicgk7ubqgi2pqbe
 - valory/transaction_settlement_abci:0.1.0:bafybeielv6eivt2z6nforq43xewl2vmpfwpdu2s2vfogobziljnwsclmlm
-- valory/ether_rate_abci:0.1.0:bafybeifhikcqnvpfqki2v7b6sigmfmflgcsd3tf2azivdl4rma4qx5qh64
 behaviours:
   main:
     args: {}
@@ -137,6 +136,7 @@ models:
       service_endpoint_base: https://learning.autonolas.tech/
       coingecko_price_template: https://api.coingecko.com/api/v3/simple/price?ids=autonolas&vs_currencies=usd&x_cg_demo_api_key={api_key}
       coingecko_api_key: null
+      betchain_contract_address: '0x8209b8E7C2585D3Ac6F7DfEE462b6f166B71e1bE'
       default_chain_id: gnosis
       transfer_target_address: '0x0000000000000000000000000000000000000000'
       olas_token_address: '0xcE11e14225575945b8E6Dc0D4F2dD4C570f79d9f'

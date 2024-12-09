@@ -29,7 +29,3 @@ transition_func:
     (TxPreparationRound, DONE): FinishedTxPreparationRound
     (TxPreparationRound, NO_MAJORITY): TxPreparationRound
     (TxPreparationRound, ROUND_TIMEOUT): TxPreparationRound
-    (coincapRound, DONE): FinishedCoincapRound
-    (coincapRound, NO_MAJORITY): coincapRound
-    (coincapRound, ROUND_TIMEOUT): coincapRound
-

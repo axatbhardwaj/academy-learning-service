@@ -1,0 +1,30 @@
+name: betchain
+author: valory
+version: 0.1.0
+type: contract
+description: A betting contract
+license: Apache-2.0
+aea_version: '>=1.0.0, <2.0.0'
+fingerprint:
+  __init__.py: bafybeif5vpc3dfrlxlch7brbhmdwksabyzddpfqgm56vdbbkek3t3br6ke
+  build/BETCHAIN.json: bafybeicogxxzcmj3vrna252t2boxrykvewltkcuobi267x437a4oqojz3e
+  contract.py: bafybeigtxnzptsq365awh42srozzbrzxqs2yfovhtcp35m2eut4oy77asa
+fingerprint_ignore_patterns: []
+contracts: []
+class_name: BetChain
+contract_interface_paths:
+  ethereum: build/BETCHAIN.json
+dependencies:
+  ecdsa:
+    version: '>=0.15'
+  eth_typing: {}
+  hexbytes: {}
+  open-aea-ledger-ethereum:
+    version: ==1.57.0
+  open-aea-test-autonomy:
+    version: ==0.16.1
+  packaging: {}
+  requests:
+    version: ==2.28.1
+  web3:
+    version: <7,>=6.0.0

@@ -40,7 +40,9 @@ def main() -> None:
                 "address"
             ] = f"${{str:{os.getenv('GNOSIS_LEDGER_RPC')}}}"
 
-        # Params
+
+        # Params           
+
         if os.getenv("COINGECKO_API_KEY"):
             # Coingecko API key (params)
             config[-1]["models"]["params"]["args"][
@@ -61,6 +63,11 @@ def main() -> None:
             config[-1]["models"]["params"]["args"]["setup"][
                 "safe_contract_address"
             ] = f"${{str:{os.getenv('SAFE_CONTRACT_ADDRESS_SINGLE')}}}"  # type: ignore
+            
+            #betchain_contract_address
+            config[-1]["models"]["params"]["args"][
+                "betchain_contract_address"
+            ] = f"${{str:{os.getenv('BETCHAIN_CONTRACT_ADDRESS')}}}"
 
             # TRANSFER_TARGET_ADDRESS
             config[-1]["models"]["params"]["args"][

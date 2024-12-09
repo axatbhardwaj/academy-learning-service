@@ -37,8 +37,6 @@ from packages.valory.skills.abstract_round_abci.base import (
 from packages.valory.skills.learning_abci.payloads import (
     DataPullPayload,
     DecisionMakingPayload,
-    NativeTransferPayload,
-    TotalSupplyCheckPayload,
     TxPreparationPayload,
 )
 
@@ -106,32 +104,44 @@ class SynchronizedData(BaseSynchronizedData):
         return str(self.db.get_strict("tx_submitter"))
 
     @property
-    def participant_to_native_transfer_round(self) -> DeserializedCollection:
-        """Get the participants to the native transfer round."""
-        return self._get_deserialized("participant_to_native_transfer_round")
+    def base_holders(self) -> int:
+        """Get the base holders."""
+        return int(self.db.get("base_holders", 0))
 
     @property
-    def total_supply(self) -> Optional[float]:
-        """Get the total supply."""
-        return self.db.get("total_supply", None)
+    def arbitrum_holders(self) -> int:
+        """Get the arbitrum holders."""
+        return int(self.db.get("arbitrum_holders", 0))
 
     @property
-    def participant_to_total_supply_check_round(self) -> DeserializedCollection:
-        """Get the participants to the total supply check round."""
-        return self._get_deserialized("participant_to_total_supply_check_round")
+    def bet_details_ipfs_hash(self) -> Optional[str]:
+        """Get the bet details ipfs hash."""
+        return self.db.get("bet_details_ipfs_hash", None)
 
+    @property
+    def winner(self) -> str:
+        """Get the winner."""
+        return str(self.db.get("winner", None))
 
-class TotalSupplyCheckRound(CollectSameUntilThresholdRound):
-    """TotalSupplyCheckRound"""
+    @property
+    def prize_amount(self) -> int:
+        """Get the prize amount."""
+        return int(self.db.get("prize_amount", 0))
 
-    payload_class = TotalSupplyCheckPayload
-    synchronized_data_class = SynchronizedData
-    done_event = Event.DONE
-    no_majority_event = Event.NO_MAJORITY
-    collection_key = get_name(SynchronizedData.participant_to_total_supply_check_round)
-    selection_key = (get_name(SynchronizedData.total_supply),)
+    @property
+    def participant_to_decision_making_round(self) -> DeserializedCollection:
+        """Get the participants to the decision making round."""
+        return self._get_deserialized("participant_to_decision_making_round")
 
-    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
+    @property
+    def result(self) -> str:
+        """Get the result."""
+        return str(self.db.get("result", ""))
+
+    @property
+    def bet_id(self) -> int:
+        """Get the bet id."""
+        return int(self.db.get("bet_id", 0))
 
 
 class DataPullRound(CollectSameUntilThresholdRound):
@@ -149,70 +159,43 @@ class DataPullRound(CollectSameUntilThresholdRound):
     # and where to store it in the synchronized data. Notice that the order follows the same order
     # from the payload class.
     selection_key = (
-        get_name(SynchronizedData.price),
-        get_name(SynchronizedData.price_ipfs_hash),
-        get_name(SynchronizedData.native_balance),
-        get_name(SynchronizedData.erc20_balance),
+        get_name(SynchronizedData.base_holders),
+        get_name(SynchronizedData.arbitrum_holders),
+        get_name(SynchronizedData.bet_details_ipfs_hash),
+        get_name(SynchronizedData.bet_id)
     )
 
     # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
 
 
-class DecisionMakingRound(CollectSameUntilThresholdRound):
+class DecisionMakingRound(CollectionRound):
     """DecisionMakingRound"""
 
     payload_class = DecisionMakingPayload
     synchronized_data_class = SynchronizedData
 
-    # Since we need to execute some actions after consensus, we override the end_block method
-    # instead of just setting the selection and collection keys
+    collection_key = get_name(SynchronizedData.participant_to_decision_making_round)
+    selection_key = (get_name(SynchronizedData.result),
+                     get_name(SynchronizedData.prize_amount))
+
     def end_block(self) -> Optional[Tuple[BaseSynchronizedData, Event]]:
         """Process the end of the block."""
+        if not self.collection:
+            return None
 
-        if self.threshold_reached:
-            event = Event(self.most_voted_payload)
-            return self.synchronized_data, event
+        # Get first payload since we don't need consensus
+        payload = next(iter(self.collection.values()))
 
-        if not self.is_majority_possible(
-            self.collection, self.synchronized_data.nb_participants
-        ):
-            return self.synchronized_data, Event.NO_MAJORITY
+        # Update synchronized data
+        synchronized_data = self.synchronized_data.update(
+            result=payload.result,
+            prize_amount=int(payload.prize_amount)
+        )
 
-        return None
+        # Determine event based on prize amount
+        event = Event.TRANSACT if int(payload.prize_amount) > 0 else Event.DONE
 
-    # Event.DONE, Event.ERROR, Event.TRANSACT, Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
-
-
-class NativeTransferRound(CollectSameUntilThresholdRound):
-    """NativeTransferRound"""
-
-    payload_class = NativeTransferPayload
-    synchronized_data_class = SynchronizedData
-    done_event = Event.DONE
-    no_majority_event = Event.NO_MAJORITY
-    collection_key = get_name(SynchronizedData.participant_to_native_transfer_round)
-    selection_key = (
-        get_name(SynchronizedData.tx_submitter),
-        get_name(SynchronizedData.most_voted_tx_hash),
-    )
-
-    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
-
-
-class TotalSupplyCheckRound(CollectSameUntilThresholdRound):
-    """TotalSupplyCheckRound"""
-
-    payload_class = TotalSupplyCheckPayload
-    synchronized_data_class = SynchronizedData
-    done_event = Event.DONE
-    no_majority_event = Event.NO_MAJORITY
-    collection_key = get_name(SynchronizedData.participant_to_total_supply_check_round)
-    selection_key = (
-        get_name(SynchronizedData.tx_submitter),
-        get_name(SynchronizedData.most_voted_tx_hash),
-    )
-
-    # Event.ROUND_TIMEOUT  # this needs to be referenced for static checkers
+        return synchronized_data, event
 
 
 class TxPreparationRound(CollectSameUntilThresholdRound):
@@ -250,11 +233,6 @@ class LearningAbciApp(AbciApp[Event]):
         DataPullRound: {
             Event.NO_MAJORITY: DataPullRound,
             Event.ROUND_TIMEOUT: DataPullRound,
-            Event.DONE: TotalSupplyCheckRound,
-        },
-        TotalSupplyCheckRound: {
-            Event.NO_MAJORITY: TotalSupplyCheckRound,
-            Event.ROUND_TIMEOUT: TotalSupplyCheckRound,
             Event.DONE: DecisionMakingRound,
         },
         DecisionMakingRound: {
@@ -267,11 +245,6 @@ class LearningAbciApp(AbciApp[Event]):
         TxPreparationRound: {
             Event.NO_MAJORITY: TxPreparationRound,
             Event.ROUND_TIMEOUT: TxPreparationRound,
-            Event.DONE: NativeTransferRound,
-        },
-        NativeTransferRound: {
-            Event.NO_MAJORITY: NativeTransferRound,
-            Event.ROUND_TIMEOUT: NativeTransferRound,
             Event.DONE: FinishedTxPreparationRound,
         },
         FinishedDecisionMakingRound: {},

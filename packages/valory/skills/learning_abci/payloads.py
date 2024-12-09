@@ -29,17 +29,18 @@ from packages.valory.skills.abstract_round_abci.base import BaseTxPayload
 class DataPullPayload(BaseTxPayload):
     """Represent a transaction payload for the DataPullRound."""
 
-    price: Optional[float]
-    price_ipfs_hash: Optional[str]
-    native_balance: Optional[float]
-    erc20_balance: Optional[float]
+    arbitrum_holders: Optional[int]
+    base_holders: Optional[int]
+    bet_details_ipfs_hash: Optional[str]
+    bet_id: Optional[int]
 
 
 @dataclass(frozen=True)
 class DecisionMakingPayload(BaseTxPayload):
     """Represent a transaction payload for the DecisionMakingRound."""
-
     event: str
+    result: str  # "win" or "lose"
+    prize_amount: str  # Store integer as string to avoid serialization issues
 
 
 @dataclass(frozen=True)
@@ -48,18 +49,3 @@ class TxPreparationPayload(BaseTxPayload):
 
     tx_submitter: Optional[str] = None
     tx_hash: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class NativeTransferPayload(BaseTxPayload):
-    """Represent a transaction payload for the TxPreparationRound."""
-
-    tx_submitter: Optional[str]
-    tx_hash: Optional[str]
-
-
-@dataclass(frozen=True)
-class TotalSupplyCheckPayload(BaseTxPayload):
-    """Represent a transaction payload for the TxPreparationRound."""
-
-    total_supply: Optional[float]

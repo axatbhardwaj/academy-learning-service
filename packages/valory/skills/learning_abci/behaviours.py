@@ -25,13 +25,14 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Dict, Generator, Optional, Set, Tuple, Type, cast
 
-from packages.valory.contracts.simple_contract.contract import TotalSupplyReader
-
 from packages.valory.contracts.erc20.contract import ERC20
 from packages.valory.contracts.gnosis_safe.contract import (
     GnosisSafeContract,
     SafeOperation,
 )
+
+from packages.valory.contracts.betchain.contract import BetChain as BettingContract
+
 from packages.valory.contracts.multisend.contract import (
     MultiSendContract,
     MultiSendOperation,
@@ -52,19 +53,15 @@ from packages.valory.skills.learning_abci.models import (
 from packages.valory.skills.learning_abci.payloads import (
     DataPullPayload,
     DecisionMakingPayload,
-    NativeTransferPayload,
     TxPreparationPayload,
-    TotalSupplyCheckPayload,
 )
 from packages.valory.skills.learning_abci.rounds import (
     DataPullRound,
     DecisionMakingRound,
     Event,
     LearningAbciApp,
-    NativeTransferRound,
     SynchronizedData,
     TxPreparationRound,
-    TotalSupplyCheckRound,
 )
 from packages.valory.skills.transaction_settlement_abci.payload_tools import (
     hash_payload_to_hex,
@@ -118,6 +115,29 @@ class LearningBaseBehaviour(BaseBehaviour, ABC):  # pylint: disable=too-many-anc
         ).round_sequence.last_round_transition_timestamp.timestamp()
 
         return now
+    
+    def get_bet_details_from_ipfs(self) -> Generator[None, None, Optional[Dict]]:
+        """Get bet details from IPFS"""
+        ipfs_hash = self.synchronized_data.bet_details_ipfs_hash
+        if not ipfs_hash:
+            self.context.logger.error("No IPFS hash available")
+            return None
+            
+        try:
+            bet_details = yield from self.get_from_ipfs(
+                ipfs_hash=ipfs_hash,
+                filetype=SupportedFiletype.JSON
+            )
+            
+            if not bet_details or "bet_details" not in bet_details:
+                self.context.logger.error("Invalid bet details format")
+                return None
+                
+            return bet_details["bet_details"]
+        except Exception as e:
+            self.context.logger.error(f"Failed to get bet details from IPFS: {e}")
+            return None
+
 
 
 class DataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ancestors
@@ -130,325 +150,211 @@ class DataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ance
 
         with self.context.benchmark_tool.measure(self.behaviour_id).local():
             sender = self.context.agent_address
+            bet_ipfs_hash = None  # Initialize hash variable
+            bet_id = None  # Initialize bet_id variable
+            
+            # Get total and resolved bets
+            total_bets = yield from self.get_total_bets()
+            if total_bets is None:
+                self.context.logger.error("Failed to get total bets.")
+            else:
+                self.context.logger.info(f"Total bets: {total_bets}")
 
-            # First mehtod to call an API: simple call to get_http_response
-            price = yield from self.get_token_price_simple()
+            resolved_bets = yield from self.get_resolved_bets()
+            if resolved_bets is None:
+                self.context.logger.error("Failed to get resolved bets.")
+            else:
+                self.context.logger.info(f"Resolved bets: {resolved_bets}")
 
-            # Second method to call an API: use ApiSpecs
-            # This call replaces the previous price, it is just an example
-            price = yield from self.get_token_price_specs()
+            # Calculate the first pending bet using total and resolved bets
+            if total_bets is not None and resolved_bets is not None:
+                if resolved_bets < total_bets:
+                    bet_id = resolved_bets + 1  # Set the bet_id
+                    self.context.logger.info(f"First pending bet: {bet_id}")
+                    
+                    # Only get bet details if we have a valid pending bet
+                    bet_details = yield from self.get_bet_details(bet_id)
+                    if bet_details is not None:
+                        bet_ipfs_hash = yield from self.store_bet_details_to_ipfs(bet_details)
 
-            # Store the price in IPFS
-            price_ipfs_hash = yield from self.send_price_to_ipfs(price)
-
-            # Get the native balance
-            native_balance = yield from self.get_native_balance()
-
-            # Get the token balance
-            erc20_balance = yield from self.get_erc20_balance()
+            # Get the number of token holders
+            token_holders = yield from self.get_token_holders()
+            arbitrum_holders = token_holders.get("arbitrum", 0)
+            base_holders = token_holders.get("base", 0)
 
             # Prepare the payload to be shared with other agents
-            # After consensus, all the agents will have the same price, price_ipfs_hash and balance variables in their synchronized data
             payload = DataPullPayload(
                 sender=sender,
-                price=price,
-                price_ipfs_hash=price_ipfs_hash,
-                native_balance=native_balance,
-                erc20_balance=erc20_balance,
+                arbitrum_holders=arbitrum_holders,
+                base_holders=base_holders,
+                bet_details_ipfs_hash=bet_ipfs_hash,
+                bet_id=bet_id  # Add bet_id to payload
             )
 
-        # Send the payload to all agents and mark the behaviour as done
-        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
-            yield from self.send_a2a_transaction(payload)
-            yield from self.wait_until_round_end()
+            # Send the payload to all agents and mark the behaviour as done
+            with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
+                yield from self.send_a2a_transaction(payload)
+                yield from self.wait_until_round_end()
 
-        self.set_done()
+            self.set_done()
 
-    def get_token_price_simple(self) -> Generator[None, None, Optional[float]]:
-        """Get token price from Coingecko usinga simple HTTP request"""
+    def get_token_holders(self) -> Generator[None, None, Optional[Dict[str, int]]]:
+        """Get the number of token holders from Blockscout for both Arbitrum and Base"""
 
-        # Prepare the url and the headers
-        url_template = self.params.coingecko_price_template
-        url = url_template.replace("{api_key}", self.params.coingecko_api_key)
+        holders = {"arbitrum": 0, "base": 0}
+
+        # URLs and headers for both APIs
+        urls = {
+            "arbitrum": "https://arbitrum.blockscout.com/api/v2/tokens/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+            "base": "https://base.blockscout.com/api/v2/tokens/0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+        }
         headers = {"accept": "application/json"}
 
-        # Make the HTTP request to Coingecko API
-        response = yield from self.get_http_response(
-            method="GET", url=url, headers=headers
-        )
-
-        # Handle HTTP errors
-        if response.status_code != HTTP_OK:
-            self.context.logger.error(
-                f"Error while pulling the price from CoinGecko: {response.body}"
+        for network, url in urls.items():
+            # Make the HTTP request to Blockscout API
+            response = yield from self.get_http_response(
+                method="GET", url=url, headers=headers
             )
 
-        # Load the response
-        api_data = json.loads(response.body)
-        price = api_data["autonolas"]["usd"]
+            # Handle HTTP errors
+            if response.status_code != HTTP_OK:
+                self.context.logger.error(
+                    f"Error while pulling the number of holders from Blockscout ({network}): {response.body}"
+                )
+                continue
 
-        self.context.logger.info(f"Got token price from Coingecko: {price}")
+            # Load the response
+            api_data = json.loads(response.body)
+            holders[network] = int(api_data["holders"])
 
-        return price
+        return holders
 
-    def get_token_price_specs(self) -> Generator[None, None, Optional[float]]:
-        """Get token price from Coingecko using ApiSpecs"""
-
-        # Get the specs
-        specs = self.coingecko_specs.get_spec()
-
-        # Make the call
-        raw_response = yield from self.get_http_response(**specs)
-
-        # Process the response
-        response = self.coingecko_specs.process_response(raw_response)
-
-        # Get the price
-        price = response.get("usd", None)
-        self.context.logger.info(f"Got token price from Coingecko: {price}")
-        return price
-
-    def send_price_to_ipfs(self, price) -> Generator[None, None, Optional[str]]:
-        """Store the token price in IPFS"""
-        data = {"price": price}
-        price_ipfs_hash = yield from self.send_to_ipfs(
-            filename=self.metadata_filepath, obj=data, filetype=SupportedFiletype.JSON
-        )
+    def get_bet_details(self, bet_id: int) -> Generator[None, None, Optional[Dict]]:
+        """Get the details of a bet from the BettingContract."""
         self.context.logger.info(
-            f"Price data stored in IPFS: https://gateway.autonolas.tech/ipfs/{price_ipfs_hash}"
-        )
-        return price_ipfs_hash
-
-    def get_erc20_balance(self) -> Generator[None, None, Optional[float]]:
-        """Get ERC20 balance"""
-        self.context.logger.info(
-            f"Getting Olas balance for Safe {self.synchronized_data.safe_contract_address}"
+            f"Getting bet details for bet ID {bet_id} from contract {self.params.betchain_contract_address}"
         )
 
-        # Use the contract api to interact with the ERC20 contract
+        # Use the contract api to interact with the BettingContract
         response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
-            contract_address=self.params.olas_token_address,
-            contract_id=str(ERC20.contract_id),
-            contract_callable="check_balance",
-            account=self.synchronized_data.safe_contract_address,
+            performative=ContractApiMessage.Performative.GET_STATE,
+            contract_address=self.params.betchain_contract_address,
+            contract_id=str(BettingContract.contract_id),
+            contract_callable="get_bet_details",
+            bet_id=bet_id,
             chain_id=GNOSIS_CHAIN_ID,
         )
 
         # Check that the response is what we expect
-        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
-            self.context.logger.error(
-                f"Error while retrieving the balance: {response_msg}"
-            )
-            return None
-
-        balance = response_msg.raw_transaction.body.get("token", None)
-
-        # Ensure that the balance is not None
-        if balance is None:
-            self.context.logger.error(
-                f"Error while retrieving the balance:  {response_msg}"
-            )
-            return None
-
-        balance = balance / 10**18  # from wei
-
-        self.context.logger.info(
-            f"Account {self.synchronized_data.safe_contract_address} has {balance} Olas"
-        )
-        return balance
-
-    def get_native_balance(self) -> Generator[None, None, Optional[float]]:
-        """Get the native balance"""
-        self.context.logger.info(
-            f"Getting native balance for Safe {self.synchronized_data.safe_contract_address}"
-        )
-
-        ledger_api_response = yield from self.get_ledger_api_response(
-            performative=LedgerApiMessage.Performative.GET_STATE,
-            ledger_callable="get_balance",
-            account=self.synchronized_data.safe_contract_address,
-            chain_id=GNOSIS_CHAIN_ID,
-        )
-
-        if ledger_api_response.performative != LedgerApiMessage.Performative.STATE:
-            self.context.logger.error(
-                f"Error while retrieving the native balance: {ledger_api_response}"
-            )
-            return None
-
-        balance = cast(int, ledger_api_response.state.body["get_balance_result"])
-        balance = balance / 10**18  # from wei
-
-        self.context.logger.error(f"Got native balance: {balance}")
-
-        return balance
-
-
-class NativeTransferBehaviour(LearningBaseBehaviour):
-    """NativeTransferBehaviour"""
-
-    matching_round: Type[AbstractRound] = NativeTransferRound
-
-    def async_act(self) -> Generator:
-        """Do the act, supporting asynchronous execution."""
-
-        with self.context.benchmark_tool.measure(self.behaviour_id).local():
-            sender = self.context.agent_address
-
-            # Get the transaction hash
-            tx_hash = yield from self.get_tx_hash()
-
-            payload = NativeTransferPayload(
-                sender=sender,
-                tx_submitter=self.auto_behaviour_id(),
-                tx_hash=tx_hash,
-            )
-
-        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
-            yield from self.send_a2a_transaction(payload)
-            yield from self.wait_until_round_end()
-
-        self.set_done()
-
-    def get_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Get the transaction hash"""
-
-        # Get native transfer safe tx hash
-        safe_tx_hash = yield from self.get_native_transfer_safe_tx_hash()
-        self.context.logger.info(f"Native transfer hash is {safe_tx_hash}")
-
-        return safe_tx_hash
-
-    def get_native_transfer_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Prepare a native safe transaction"""
-
-        # Transaction data
-        data = {VALUE_KEY: 1, TO_ADDRESS_KEY: self.params.transfer_target_address}
-        self.context.logger.info(f"Native transfer data is {data}")
-
-        # Prepare safe transaction
-        safe_tx_hash = yield from self._build_safe_tx_hash(**data)
-        return safe_tx_hash
-
-    def _build_safe_tx_hash(
-        self,
-        to_address: str,
-        value: int = ZERO_VALUE,
-        data: bytes = EMPTY_CALL_DATA,
-        operation: int = SafeOperation.CALL.value,
-    ) -> Generator[None, None, Optional[str]]:
-        """Prepares and returns the safe tx hash for a native tx."""
-
-        self.context.logger.info(
-            f"Preparing Safe transaction [{self.synchronized_data.safe_contract_address}]"
-        )
-
-        # Prepare the safe transaction
-        response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_STATE,  # type: ignore
-            contract_address=self.synchronized_data.safe_contract_address,
-            contract_id=str(GnosisSafeContract.contract_id),
-            contract_callable="get_raw_safe_transaction_hash",
-            to_address=to_address,
-            value=value,
-            data=data,
-            safe_tx_gas=SAFE_GAS,
-            chain_id=GNOSIS_CHAIN_ID,
-            operation=operation,
-        )
-
-        # Check for errors
         if response_msg.performative != ContractApiMessage.Performative.STATE:
             self.context.logger.error(
-                "Couldn't get safe tx hash. Expected response performative "
-                f"{ContractApiMessage.Performative.STATE.value!r}, "  # type: ignore
-                f"received {response_msg.performative.value!r}: {response_msg}."
+                f"Error while retrieving bet details for bet ID {bet_id}: {response_msg}"
             )
             return None
 
-        # Extract the hash and check it has the correct length
-        tx_hash: Optional[str] = response_msg.state.body.get("tx_hash", None)
+        bet_details = response_msg.state.body.get("data", None)
 
-        if tx_hash is None or len(tx_hash) != TX_HASH_LENGTH:
+        # Ensure that the bet details are not None
+        if bet_details is None:
             self.context.logger.error(
-                "Something went wrong while trying to get the safe transaction hash. "
-                f"Invalid hash {tx_hash!r} was returned."
+                f"Error while retrieving bet details for bet ID {bet_id}: {response_msg}"
             )
             return None
 
-        # Transaction to hex
-        tx_hash = tx_hash[2:]  # strip the 0x
+        self.context.logger.info(f"Bet details for bet ID {bet_id}: {bet_details}")
+        return bet_details
 
-        safe_tx_hash = hash_payload_to_hex(
-            safe_tx_hash=tx_hash,
-            ether_value=value,
-            safe_tx_gas=SAFE_GAS,
-            to_address=to_address,
-            data=data,
-            operation=operation,
-        )
-
-        self.context.logger.info(f"Safe transaction hash is {safe_tx_hash}")
-
-        return safe_tx_hash
-
-
-class TotalSupplyCheckBehaviour(LearningBaseBehaviour):
-    """TotalSupplyCheckBehaviour"""
-
-    matching_round: Type[AbstractRound] = TotalSupplyCheckRound
-
-    def async_act(self) -> Generator:
-        """Check the total supply of the token."""
-        with self.context.benchmark_tool.measure(self.behaviour_id).local():
-            sender = self.context.agent_address
-
-            total_supply = yield from self.get_total_supply()
-
-            payload = TotalSupplyCheckPayload(sender=sender, total_supply=total_supply)
-
-        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
-            yield from self.send_a2a_transaction(payload)
-            yield from self.wait_until_round_end()
-
-        self.set_done()
-
-    def get_total_supply(self) -> Generator[None, None, Optional[float]]:
-        """Get the total supply of the token"""
+    def get_total_bets(self) -> Generator[None, None, Optional[int]]:
+        """Get the total number of bets from the BettingContract."""
         self.context.logger.info(
-            f"Getting total supply for token at address {self.params.olas_token_address}"
+            f"Getting total bets from contract {self.params.betchain_contract_address}"
         )
 
-        # Use the contract api to interact with the token contract
+        # Use the contract api to interact with the BettingContract
         response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
-            contract_address=self.params.olas_token_address,
-            contract_id=str(TotalSupplyReader.contract_id),
-            contract_callable="get_total_supply",
+            performative=ContractApiMessage.Performative.GET_STATE,
+            contract_address=self.params.betchain_contract_address,
+            contract_id=str(BettingContract.contract_id),
+            contract_callable="get_total_bets",
             chain_id=GNOSIS_CHAIN_ID,
         )
 
         # Check that the response is what we expect
-        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+        if response_msg.performative != ContractApiMessage.Performative.STATE:
             self.context.logger.error(
-                f"Error while retrieving the total supply: {response_msg}"
+                f"Error while retrieving total bets: {response_msg}"
             )
             return None
 
-        total_supply = response_msg.raw_transaction.body.get("total_supply", None)
+        total_bets = response_msg.state.body.get("data", None)
 
-        # Ensure that the total supply is not None
-        if total_supply is None:
+        # Ensure that the total bets is not None
+        if total_bets is None:
             self.context.logger.error(
-                f"Error while retrieving the total supply: {response_msg}"
+                f"Error while retrieving total bets: {response_msg}"
             )
             return None
 
-        total_supply = total_supply / 10**18  # from wei
+        self.context.logger.info(f"Total bets: {total_bets}")
+        return total_bets
 
-        self.context.logger.info(f"Total supply of the token: {total_supply}")
-        return total_supply
+    def get_resolved_bets(self) -> Generator[None, None, Optional[int]]:
+        """Get the number of resolved bets from the BettingContract."""
+        self.context.logger.info(
+            f"Getting resolved bets from contract {self.params.betchain_contract_address}"
+        )
+
+        # Use the contract api to interact with the BettingContract  
+        response_msg = yield from self.get_contract_api_response(
+            performative=ContractApiMessage.Performative.GET_STATE,
+            contract_address=self.params.betchain_contract_address,
+            contract_id=str(BettingContract.contract_id),
+            contract_callable="get_resolved_bets", 
+            chain_id=GNOSIS_CHAIN_ID,
+        )
+
+        # Check that the response is what we expect
+        if response_msg.performative != ContractApiMessage.Performative.STATE:
+            self.context.logger.error(
+                f"Error while retrieving resolved bets: {response_msg}"
+            )
+            return None
+
+        resolved_bets = response_msg.state.body.get("data", None)
+
+        # Ensure that the resolved bets is not None
+        if resolved_bets is None:
+            self.context.logger.error(
+                f"Error while retrieving resolved bets: {response_msg}"
+            )
+            return None
+
+        self.context.logger.info(f"Resolved bets: {resolved_bets}")
+        return resolved_bets
+
+    def store_bet_details_to_ipfs(self, bet_details: Dict) -> Generator[None, None, Optional[str]]:
+        """Store bet details in IPFS"""
+        # Create metadata object with timestamp and bet details
+        metadata = {
+            "timestamp": self.get_sync_timestamp(),
+            "bet_details": bet_details
+        }
+        
+        # Store metadata in IPFS
+        ipfs_hash = yield from self.send_to_ipfs(
+            filename=self.metadata_filepath,
+            obj=metadata, 
+            filetype=SupportedFiletype.JSON
+        )
+        
+        if ipfs_hash:
+            self.context.logger.info(
+                f"Bet details stored in IPFS: https://gateway.autonolas.tech/ipfs/{ipfs_hash}"
+            )
+        else:
+            self.context.logger.error("Failed to store bet details in IPFS")
+            
+        return ipfs_hash
 
 
 class DecisionMakingBehaviour(
@@ -460,14 +366,30 @@ class DecisionMakingBehaviour(
 
     def async_act(self) -> Generator:
         """Do the act, supporting asynchronous execution."""
-
         with self.context.benchmark_tool.measure(self.behaviour_id).local():
             sender = self.context.agent_address
-
-            # Make a decision: either transact or not
-            event = yield from self.get_next_event()
-
-            payload = DecisionMakingPayload(sender=sender, event=event)
+            
+            # Get bet details from IPFS
+            bet_details = yield from self.get_bet_details_from_ipfs()
+            if bet_details is None:
+                # Handle error case
+                payload = DecisionMakingPayload(
+                    sender=sender,
+                    event=Event.ERROR.value,
+                    result="lose",  # Default to lose on error
+                    prize_amount=0
+                )
+            else:
+                # Calculate result and prize
+                result, prize_amount = self.determine_winner_and_prize(bet_details)
+                
+                # Create proper payload object
+                payload = DecisionMakingPayload(
+                    sender=sender,
+                    event=Event.TRANSACT.value if prize_amount > 0 else Event.DONE.value,
+                    result=result,  # Using result instead of winner
+                    prize_amount=str(prize_amount)  # Convert to string for payload
+                )
 
         with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
             yield from self.send_a2a_transaction(payload)
@@ -475,86 +397,37 @@ class DecisionMakingBehaviour(
 
         self.set_done()
 
-    def get_next_event(self) -> Generator[None, None, str]:
-        """Get the next event: decide whether ot transact or not based on some data."""
-
-        # This method showcases how to make decisions based on conditions.
-        # This is just a dummy implementation.
-
-        # Get the latest block number from the chain
-        block_number = yield from self.get_block_number()
-
-        # Get the balance we calculated in the previous round
-        native_balance = self.synchronized_data.native_balance
-
-        # We stored the price using two approaches: synchronized_data and IPFS
-        # Similarly, we retrieve using the corresponding ways
-        token_price = self.synchronized_data.price
-        token_price = yield from self.get_price_from_ipfs()
-
-        # If we fail to get the block number, we send the ERROR event
-        if not block_number:
-            self.context.logger.info("Block number is None. Sending the ERROR event...")
-            return Event.ERROR.value
-
-        # If we fail to get the token price, we send the ERROR event
-        if not token_price:
-            self.context.logger.info("Token price is None. Sending the ERROR event...")
-            return Event.ERROR.value
-
-        # If we fail to get the token balance, we send the ERROR event
-        if not native_balance:
-            self.context.logger.info(
-                "Native balance is None. Sending the ERROR event..."
-            )
-            return Event.ERROR.value
-
-        # Make a decision based on the balance's last number
-        last_number = int(str(native_balance)[-1])
-
-        # If the number is even, we transact
-        if last_number % 2 == 0:
-            self.context.logger.info("Number is even. Transacting.")
-            return Event.TRANSACT.value
-
-        # Otherwise we send the DONE event
-        self.context.logger.info("Number is odd. Not transacting.")
-        return Event.DONE.value
-
-    def get_block_number(self) -> Generator[None, None, Optional[int]]:
-        """Get the block number"""
-
-        # Call the ledger connection (equivalent to web3.py)
-        ledger_api_response = yield from self.get_ledger_api_response(
-            performative=LedgerApiMessage.Performative.GET_STATE,
-            ledger_callable="get_block_number",
-            chain_id=GNOSIS_CHAIN_ID,
+    def determine_winner_and_prize(self, bet_details: list) -> Tuple[str, int]:
+        """Determine result and calculate prize amount based on holder counts."""
+        
+        # Get holder counts from synchronized data
+        arbitrum_holders = self.synchronized_data.arbitrum_holders
+        base_holders = self.synchronized_data.base_holders
+        
+        # Get user's choice and bet amount from bet details list
+        user_choice = bet_details[0] if bet_details else 0
+        bet_amount = bet_details[1] if len(bet_details) > 1 else 0
+        
+        # Convert choice to chain selection (1 for arbitrum, 2 for base)
+        user_selected = "arbitrum" if user_choice == 1 else "base"
+        
+        # Determine actual winner based on holder counts
+        actual_winner = "arbitrum" if arbitrum_holders > base_holders else "base"
+        
+        # Determine if user won or lost
+        result = "win" if user_selected == actual_winner else "lose"
+        
+        # Calculate prize amount
+        holder_difference = abs(arbitrum_holders - base_holders)
+        prize_multiplier = holder_difference / 1000  # 1 wei per 1000 holder difference
+        prize_amount = int(bet_amount * prize_multiplier) if result == "win" else 0
+        
+        self.context.logger.info(
+            f"User chose {user_selected}, actual winner was {actual_winner}, "
+            f"result is {result}, prize amount is {prize_amount} wei"
         )
-
-        # Check for errors on the response
-        if ledger_api_response.performative != LedgerApiMessage.Performative.STATE:
-            self.context.logger.error(
-                f"Error while retrieving block number: {ledger_api_response}"
-            )
-            return None
-
-        # Extract and return the block number
-        block_number = cast(
-            int, ledger_api_response.state.body["get_block_number_result"]
-        )
-
-        self.context.logger.error(f"Got block number: {block_number}")
-
-        return block_number
-
-    def get_price_from_ipfs(self) -> Generator[None, None, Optional[dict]]:
-        """Load the price data from IPFS"""
-        ipfs_hash = self.synchronized_data.price_ipfs_hash
-        price = yield from self.get_from_ipfs(
-            ipfs_hash=ipfs_hash, filetype=SupportedFiletype.JSON
-        )
-        self.context.logger.error(f"Got price from IPFS: {price}")
-        return price
+        
+        return result, prize_amount
 
 
 class TxPreparationBehaviour(
@@ -566,15 +439,67 @@ class TxPreparationBehaviour(
 
     def async_act(self) -> Generator:
         """Do the act, supporting asynchronous execution."""
-
         with self.context.benchmark_tool.measure(self.behaviour_id).local():
             sender = self.context.agent_address
 
-            # Get the transaction hash
-            tx_hash = yield from self.get_tx_hash()
+        # Get prize amount from synchronized data
+            try:
+                prize_amount = int(self.synchronized_data.prize_amount)
+                if prize_amount < 0:
+                    self.context.logger.error("Invalid prize amount")
+                    return None
+            except (ValueError, TypeError):
+                self.context.logger.error("Failed to parse prize amount")
+                return None
+
+            # Get prize transfer data
+            prize_tx = yield from self.get_prize_transfer_tx()
+            if not prize_tx:
+                self.context.logger.error("Failed to prepare prize transfer tx")
+                return None
+
+            # Get bet resolution data
+            resolve_tx = yield from self.get_resolve_bet_tx()
+            if not resolve_tx:
+                self.context.logger.error("Failed to prepare resolve bet tx")
+                return None
+
+            # Combine transactions for multisend
+            multi_send_txs = [prize_tx, resolve_tx]
+
+            # Get multisend tx data
+            multisend_msg = yield from self.get_contract_api_response(
+                performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
+                contract_address=self.params.multisend_address,
+                contract_id=str(MultiSendContract.contract_id),
+                contract_callable="get_tx_data",
+                multi_send_txs=multi_send_txs,
+                chain_id=GNOSIS_CHAIN_ID,
+            )
+
+            if multisend_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+                self.context.logger.error(f"Invalid multisend response: {multisend_msg}")
+                return None
+
+            multisend_data = multisend_msg.raw_transaction.body.get("data")
+            cast(str, multisend_data)
+      
+            multisend_data = bytes.fromhex(multisend_data[2:])
+
+            tx_hash = yield from self._build_safe_tx_hash(
+                to_address=self.params.multisend_address,
+                value=prize_amount,
+                data=multisend_data,
+                operation=SafeOperation.DELEGATE_CALL.value
+            )
+
+            if not tx_hash:
+                self.context.logger.error("Failed to build safe tx hash")
+                return None
 
             payload = TxPreparationPayload(
-                sender=sender, tx_submitter=self.auto_behaviour_id(), tx_hash=tx_hash
+                sender=sender,
+                tx_hash=tx_hash,
             )
 
         with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
@@ -583,36 +508,99 @@ class TxPreparationBehaviour(
 
         self.set_done()
 
+    def get_prize_transfer_tx(self) -> Generator[None, None, Optional[Dict]]:
+        """Get prize transfer transaction data."""
+        self.context.logger.info("Preparing prize transfer transaction")
+
+        try:
+            prize_amount = int(self.synchronized_data.prize_amount)
+            if prize_amount < 0:
+                self.context.logger.error("Invalid prize amount")
+                return None
+        except (ValueError, TypeError):
+            self.context.logger.error("Failed to parse prize amount")
+            return None
+
+        # Get winner address from bet details
+        bet_details = yield from self.get_bet_details_from_ipfs()
+        winner_address = bet_details[0] if bet_details else None
+        if not winner_address:
+            self.context.logger.error("Failed to get winner address")
+            return None
+
+        return {
+            "operation": MultiSendOperation.CALL,
+            "to": winner_address,
+            "value": prize_amount,
+            "data": b""
+        }
+
+    def get_resolve_bet_tx(self) -> Generator[None, None, Optional[Dict]]:
+        """Get bet resolution transaction data."""
+        self.context.logger.info("Preparing bet resolution transaction")
+
+        # Validate bet ID and result
+        bet_id = self.synchronized_data.bet_id
+        if bet_id is None:
+            self.context.logger.error("No bet ID available")
+            return None
+
+        result = 1 if self.synchronized_data.result == "win" else 0
+        ipfs_hash = self.synchronized_data.bet_details_ipfs_hash
+
+        # Prepare contract call
+        response_msg = yield from self.get_contract_api_response(
+            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
+            contract_address=self.params.betchain_contract_address,
+            contract_id=str(BettingContract.contract_id),
+            contract_callable="resolve_bet",
+            bet_id=bet_id,
+            result=result,
+            ipfs_hash=ipfs_hash,
+            chain_id=GNOSIS_CHAIN_ID,
+        )
+
+        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+            self.context.logger.error(
+                f"Could not get resolve bet hash. "
+                f"Expected: {ContractApiMessage.Performative.RAW_TRANSACTION.value}, "
+                f"Actual: {response_msg.performative.value}"
+            )
+            return None
+
+        self.context.logger.info(f"Resolve bet response msg is {response_msg}")
+        tx_data = cast(bytes, response_msg.raw_transaction.body.get("data"))
+        self.context.logger.info(f"Resolve bet tx data is {tx_data}")
+
+        if not tx_data:
+            self.context.logger.error("No transaction data received")
+            return None
+
+        return {
+            "operation": MultiSendOperation.CALL,
+            "to": self.params.betchain_contract_address, 
+            "value": 0,
+            "data": tx_data.hex()
+        }
+
     def get_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Get the transaction hash"""
-
-        # Here want to showcase how to prepare different types of transactions.
-        # Depending on the timestamp's last number, we will make a native transaction,
-        # an ERC20 transaction or both.
-
-        # All transactions need to be sent from the Safe controlled by the agents.
-
-        # Again, make a decision based on the timestamp (on its last number)
-        now = int(self.get_sync_timestamp())
-        self.context.logger.info(f"Timestamp is {now}")
-        last_number = int(str(now)[-1])
-
-        # Native transaction (Safe -> recipient)
-        if last_number in [0, 1, 2, 3]:
-            self.context.logger.info("Preparing a native transaction")
-            tx_hash = yield from self.get_native_transfer_safe_tx_hash()
-            return tx_hash
-
-        # ERC20 transaction (Safe -> recipient)
-        if last_number in [4, 5, 6]:
-            self.context.logger.info("Preparing an ERC20 transaction")
-            tx_hash = yield from self.get_erc20_transfer_safe_tx_hash()
-            return tx_hash
-
-        # Multisend transaction (both native and ERC20) (Safe -> recipient)
-        self.context.logger.info("Preparing a multisend transaction")
-        tx_hash = yield from self.get_multisend_safe_tx_hash()
-        return tx_hash
+        """Get the transaction hash for resolving the bet"""
+        self.context.logger.info("Preparing bet resolution transaction")
+        
+        # Get the resolve bet data
+        resolve_bet_data_hex = yield from self.get_resolve_bet_data()
+        if resolve_bet_data_hex is None:
+            return None
+            
+        # Prepare safe transaction for bet resolution
+        safe_tx_hash = yield from self._build_safe_tx_hash(
+            to_address=self.params.betchain_contract_address,
+            value=0,  # No value transfer needed for resolution
+            data=bytes.fromhex(resolve_bet_data_hex)
+        )
+        
+        self.context.logger.info(f"Bet resolution transaction hash: {safe_tx_hash}")
+        return safe_tx_hash
 
     def get_native_transfer_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
         """Prepare a native safe transaction"""
@@ -692,42 +680,39 @@ class TxPreparationBehaviour(
         return data_hex
 
     def get_multisend_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Get a multisend transaction hash"""
-        # Step 1: we prepare a list of transactions
-        # Step 2: we pack all the transactions in a single one using the mulstisend contract
-        # Step 3: we wrap the multisend call inside a Safe call, as always
-
+        """Get a multisend transaction hash for resolve bet and native transfer"""
         multi_send_txs = []
 
-        # Native transfer
-        native_transfer_data = self.get_native_transfer_data()
-        multi_send_txs.append(
-            {
-                "operation": MultiSendOperation.CALL,
-                "to": self.params.transfer_target_address,
-                "value": native_transfer_data[VALUE_KEY],
-                # No data key in this transaction, since it is a native transfer
-            }
-        )
-
-        # ERC20 transfer
-        erc20_transfer_data_hex = yield from self.get_erc20_transfer_data()
-
-        if erc20_transfer_data_hex is None:
+        # Get resolve bet transaction data
+        resolve_bet_data_hex = yield from self.get_resolve_bet_data()
+        if resolve_bet_data_hex is None:
+            self.context.logger.error("Could not get resolve bet transaction data")
             return None
 
-        multi_send_txs.append(
-            {
-                "operation": MultiSendOperation.CALL,
-                "to": self.params.olas_token_address,
-                "value": ZERO_VALUE,
-                "data": bytes.fromhex(erc20_transfer_data_hex),
-            }
-        )
+        # Add resolve bet transaction
+        multi_send_txs.append({
+            "operation": MultiSendOperation.CALL,
+            "to": self.params.betchain_contract_address,
+            "value": ZERO_VALUE,
+            "data": bytes.fromhex(resolve_bet_data_hex),
+        })
 
-        # Multisend call
+        # Get winner prize transfer hash
+        winner_tx_hash = yield from self.get_winner_transfer_tx_hash()
+        if winner_tx_hash is not None:
+            bet_details = yield from self.get_bet_details_from_ipfs()
+            if bet_details:
+                # Add winner prize transfer transaction
+                multi_send_txs.append({
+                    "operation": MultiSendOperation.CALL,
+                    "to": bet_details[2],  # winner address
+                    "value": int(self.synchronized_data.prize_amount),
+                    "data": EMPTY_CALL_DATA,
+                })
+
+        # Prepare multisend transaction
         contract_api_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
+            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
             contract_address=self.params.multisend_address,
             contract_id=str(MultiSendContract.contract_id),
             contract_callable="get_tx_data",
@@ -735,11 +720,7 @@ class TxPreparationBehaviour(
             chain_id=GNOSIS_CHAIN_ID,
         )
 
-        # Check for errors
-        if (
-            contract_api_msg.performative
-            != ContractApiMessage.Performative.RAW_TRANSACTION
-        ):
+        if contract_api_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
             self.context.logger.error(
                 f"Could not get Multisend tx hash. "
                 f"Expected: {ContractApiMessage.Performative.RAW_TRANSACTION.value}, "
@@ -747,16 +728,16 @@ class TxPreparationBehaviour(
             )
             return None
 
-        # Extract the multisend data and strip the 0x
+        # Extract multisend data and strip 0x prefix
         multisend_data = cast(str, contract_api_msg.raw_transaction.body["data"])[2:]
         self.context.logger.info(f"Multisend data is {multisend_data}")
 
-        # Prepare the Safe transaction
+        # Prepare Safe transaction using multisend
         safe_tx_hash = yield from self._build_safe_tx_hash(
             to_address=self.params.multisend_address,
-            value=ZERO_VALUE,  # the safe is not moving any native value into the multisend
+            value=ZERO_VALUE,
             data=bytes.fromhex(multisend_data),
-            operation=SafeOperation.DELEGATE_CALL.value,  # we are delegating the call to the multisend contract
+            operation=SafeOperation.DELEGATE_CALL.value,
         )
         return safe_tx_hash
 
@@ -767,15 +748,13 @@ class TxPreparationBehaviour(
         data: bytes = EMPTY_CALL_DATA,
         operation: int = SafeOperation.CALL.value,
     ) -> Generator[None, None, Optional[str]]:
-        """Prepares and returns the safe tx hash for a multisend tx."""
+        """Build safe transaction hash."""
+        
+        self.context.logger.info(f"Building Safe tx hash for {to_address}")
 
-        self.context.logger.info(
-            f"Preparing Safe transaction [{self.synchronized_data.safe_contract_address}]"
-        )
-
-        # Prepare the safe transaction
+        # Get safe transaction hash from contract
         response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_STATE,  # type: ignore
+            performative=ContractApiMessage.Performative.GET_STATE,
             contract_address=self.synchronized_data.safe_contract_address,
             contract_id=str(GnosisSafeContract.contract_id),
             contract_callable="get_raw_safe_transaction_hash",
@@ -787,51 +766,121 @@ class TxPreparationBehaviour(
             operation=operation,
         )
 
-        # Check for errors
         if response_msg.performative != ContractApiMessage.Performative.STATE:
-            self.context.logger.error(
-                "Couldn't get safe tx hash. Expected response performative "
-                f"{ContractApiMessage.Performative.STATE.value!r}, "  # type: ignore
-                f"received {response_msg.performative.value!r}: {response_msg}."
-            )
+            self.context.logger.error(f"Invalid response: {response_msg}")
             return None
 
-        # Extract the hash and check it has the correct length
-        tx_hash: Optional[str] = response_msg.state.body.get("tx_hash", None)
-
-        if tx_hash is None or len(tx_hash) != TX_HASH_LENGTH:
-            self.context.logger.error(
-                "Something went wrong while trying to get the safe transaction hash. "
-                f"Invalid hash {tx_hash!r} was returned."
-            )
+        # Get hash from response
+        safe_tx_hash = response_msg.state.body.get("tx_hash")
+        self.context.logger.info(f"Raw safe_tx_hash: {safe_tx_hash}")
+        
+        if not safe_tx_hash:
+            self.context.logger.error("No tx hash in response")
             return None
 
-        # Transaction to hex
-        tx_hash = tx_hash[2:]  # strip the 0x
+        cast(str, safe_tx_hash)
+        
+        if safe_tx_hash.startswith("0x"):
+            safe_tx_hash = safe_tx_hash[2:]
+            #     # Convert hex string to bytes
+            # safe_tx_hash_bytes = bytes.fromhex(safe_tx_hash.zfill(64))  # Ensure 32 bytes (64 hex chars)
+    
+            # Generate final hash
+            tx_hash = hash_payload_to_hex(
+                safe_tx_hash=safe_tx_hash,
+                ether_value=value,
+                safe_tx_gas=SAFE_GAS,
+                to_address=to_address,
+                data=data,
+                operation=operation,
+            )
+            self.context.logger.info(f"Generated tx hash: {tx_hash}")
+            return tx_hash
 
-        safe_tx_hash = hash_payload_to_hex(
-            safe_tx_hash=tx_hash,
-            ether_value=value,
-            safe_tx_gas=SAFE_GAS,
-            to_address=to_address,
-            data=data,
-            operation=operation,
+    def get_resolve_bet_data(self) -> Generator[None, None, Optional[str]]:
+        """Get the resolve bet transaction data"""
+        self.context.logger.info("Preparing resolve bet transaction")
+        
+        # Get bet ID and result from synchronized data
+        bet_id = self.synchronized_data.bet_id
+        result = 1 if self.synchronized_data.result == "win" else 0
+        ipfs_hash = self.synchronized_data.bet_details_ipfs_hash
+
+        if not ipfs_hash:
+            self.context.logger.error("No IPFS hash available for bet resolution")
+            return None
+
+        # Use the contract api to interact with the BettingContract
+        response_msg = yield from self.get_contract_api_response(
+            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
+            contract_address=self.params.betchain_contract_address,
+            contract_id=str(BettingContract.contract_id),
+            contract_callable="resolve_bet",
+            bet_id=bet_id,
+            result=result,
+            ipfs_hash=ipfs_hash,
+            chain_id=GNOSIS_CHAIN_ID,
         )
 
-        self.context.logger.info(f"Safe transaction hash is {safe_tx_hash}")
+        # Check response
+        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+            self.context.logger.error(
+                f"Error while preparing resolve bet transaction: {response_msg}"
+            )
+            return None
 
+        data_bytes: Optional[bytes] = response_msg.raw_transaction.body.get("data", None)
+        if data_bytes is None:
+            self.context.logger.error("No data returned for resolve bet transaction")
+            return None
+
+        data_hex = data_bytes.hex()
+        self.context.logger.info(f"Resolve bet data is {data_hex}")
+        return data_hex
+    
+    def get_winner_transfer_tx_hash(self) -> Generator[None, None, Optional[str]]:
+        """Get transaction hash for transferring prize to winner"""
+        try:
+            prize_amount = int(self.synchronized_data.prize_amount)
+            if prize_amount < 0:
+                self.context.logger.error("Invalid prize amount")
+                return None
+        except (ValueError, TypeError):
+            self.context.logger.error("Failed to parse prize amount")
+            return None
+
+        bet_details = yield from self.get_bet_details_from_ipfs()
+        
+        if not bet_details or prize_amount <= 0:
+            self.context.logger.error("No prize amount or bet details available")
+            return None
+            
+        # Get winner address from bet details
+        winner_address = bet_details[2] if len(bet_details) > 2 else None
+        if not winner_address:
+            self.context.logger.error("No winner address found in bet details")
+            return None
+
+        # Prepare safe transaction for prize transfer
+        safe_tx_hash = yield from self._build_safe_tx_hash(
+            to_address=winner_address,
+            value=prize_amount,
+            data=EMPTY_CALL_DATA
+        )
+        
+        self.context.logger.info(
+            f"Prize transfer hash: {safe_tx_hash}, "
+            f"Amount: {prize_amount}, "
+            f"To: {winner_address}"
+        )
         return safe_tx_hash
-
-
 class LearningRoundBehaviour(AbstractRoundBehaviour):
     """LearningRoundBehaviour"""
 
     initial_behaviour_cls = DataPullBehaviour
     abci_app_cls = LearningAbciApp  # type: ignore
-    behaviours: Set[Type[BaseBehaviour]] = {  # type: ignore
+    behaviours: Set[Type[BaseBehaviour]] = [  # type: ignore
         DataPullBehaviour,
-        NativeTransferBehaviour,
         DecisionMakingBehaviour,
         TxPreparationBehaviour,
-        TotalSupplyCheckBehaviour,
-    }
+    ]
